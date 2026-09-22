@@ -1,0 +1,6 @@
+{
+  "name": "YouTube MP3 Downloader",
+  "description": "Aplicativo para baixar áudio em MP3 a partir de links do YouTube com seleção de qualidade e prévia.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
