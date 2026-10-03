@@ -1,7 +1,7 @@
 import React from 'react';
 import { History, Play, Download, Trash2, ArrowRight } from 'lucide-react';
 import { DownloadHistoryItem } from '../types';
-import { triggerBrowserDownload } from '../utils/downloadHelper';
+import { triggerBrowserDownload, cleanAudioFilename } from '../utils/downloadHelper';
 
 interface RecentDownloadsProps {
   history: DownloadHistoryItem[];
@@ -92,21 +92,18 @@ export const RecentDownloads: React.FC<RecentDownloadsProps> = ({
                 <Play className="w-3.5 h-3.5 fill-current" />
               </button>
 
-              <a
-                href={item.downloadUrl}
-                download={`${item.artist} - ${item.title}.${item.format}`}
-                target="_blank"
-                rel="noreferrer"
-                onClick={() => {
-                  try {
-                    triggerBrowserDownload(item.downloadUrl, `${item.artist} - ${item.title}.${item.format}`);
-                  } catch {}
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.preventDefault();
+                  const cleanName = cleanAudioFilename(item.artist, item.title, item.format);
+                  triggerBrowserDownload(item.downloadUrl, cleanName);
                 }}
                 className="p-1.5 bg-rose-600 hover:bg-rose-500 text-white rounded-md transition-colors cursor-pointer"
-                title="Baixar para o aparelho"
+                title="Salvar arquivo único limpo"
               >
                 <Download className="w-3.5 h-3.5" />
-              </a>
+              </button>
             </div>
           </div>
         ))}

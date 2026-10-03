@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { Layers, Play, Download, Loader2, CheckCircle2, AlertCircle, Trash2, Plus } from 'lucide-react';
 import { AudioBitrate, AudioFormat, DownloadHistoryItem } from '../types';
-import { triggerBrowserDownload } from '../utils/downloadHelper';
+import { triggerBrowserDownload, cleanAudioFilename } from '../utils/downloadHelper';
 
 interface BatchItem {
   id: string;
@@ -306,19 +306,19 @@ export const BatchConverter: React.FC<BatchConverterProps> = ({ onAddToHistory }
 
                 <div className="flex items-center gap-2 shrink-0">
                   {it.status === 'ready' && it.downloadUrl && (
-                    <a
-                      href={it.downloadUrl}
-                      download={`${it.title || 'audio'}.${format}`}
-                      target="_blank"
-                      rel="noreferrer"
-                      onClick={() => {
-                        triggerBrowserDownload(it.downloadUrl!, `${it.title || 'audio'}.${format}`);
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        const cleanName = cleanAudioFilename('', it.title || 'audio', format);
+                        triggerBrowserDownload(it.downloadUrl!, cleanName);
                       }}
-                      className="flex items-center gap-1 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-semibold cursor-pointer"
+                      className="flex items-center gap-1 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-semibold cursor-pointer transition-colors"
+                      title="Salvar arquivo único limpo"
                     >
                       <Download className="w-3.5 h-3.5" />
                       <span>Baixar</span>
-                    </a>
+                    </button>
                   )}
 
                   <button

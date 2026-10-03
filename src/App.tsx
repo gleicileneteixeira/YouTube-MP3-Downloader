@@ -10,7 +10,7 @@ import { FaqGuide } from './components/FaqGuide';
 import { FeatureHighlights } from './components/FeatureHighlights';
 import { RecentDownloads } from './components/RecentDownloads';
 import { VideoMetadata, ConversionSettings, ConversionJob, DownloadHistoryItem } from './types';
-import { triggerBrowserDownload } from './utils/downloadHelper';
+import { triggerBrowserDownload, cleanAudioFilename } from './utils/downloadHelper';
 import { Music2, Headphones, Sparkles, CheckCircle2, ArrowDown } from 'lucide-react';
 
 const STORAGE_KEY = 'yt_mp3_downloader_history_v1';
@@ -118,7 +118,11 @@ export default function App() {
     setIsConverting(true);
     setIsModalOpen(true);
 
-    const initialFilename = `${settings.customArtist || metadata.author} - ${settings.customTitle || metadata.title}.${settings.format}`;
+    const initialFilename = cleanAudioFilename(
+      settings.customArtist || metadata.author,
+      settings.customTitle || metadata.title,
+      settings.format
+    );
 
     const newJob: ConversionJob = {
       id: '',
@@ -257,15 +261,6 @@ export default function App() {
             setHistory((prev) => [historyItem, ...prev.filter((i) => i.videoId !== metadata.id)].slice(0, 30));
             setIsConverting(false);
 
-            // Auto-trigger browser download to the device
-            setTimeout(() => {
-              try {
-                triggerBrowserDownload(proxyUrl, initialFilename);
-              } catch (e) {
-                console.warn('Auto download error, user can click button:', e);
-              }
-            }, 500);
-
             return;
           }
 
@@ -311,10 +306,6 @@ export default function App() {
             };
             setHistory((prev) => [fallbackHistoryItem, ...prev.filter((i) => i.videoId !== metadata.id)].slice(0, 30));
             setIsConverting(false);
-
-            setTimeout(() => {
-              triggerBrowserDownload(directFallback, initialFilename);
-            }, 500);
           }
         } catch (err: any) {
           console.warn('Polling error:', err);

@@ -1,5 +1,6 @@
 import express from 'express';
 import path from 'path';
+import fs from 'fs';
 import { spawn } from 'child_process';
 import { createServer as createViteServer } from 'vite';
 
@@ -7,6 +8,107 @@ const app = express();
 const PORT = 3000;
 
 app.use(express.json());
+
+/**
+ * Remove any leftover temporary files, partial downloads (.part, .ytdl),
+ * and zero-byte or aborted files from downloads and temporary directories.
+ */
+function cleanupTemporaryArtifacts() {
+  const dirsToClean = [
+    path.join(process.cwd(), 'downloads'),
+    '/tmp',
+  ];
+
+  for (const dir of dirsToClean) {
+    try {
+      if (!fs.existsSync(dir)) continue;
+      const files = fs.readdirSync(dir);
+      for (const file of files) {
+        if (
+          file.endsWith('.part') ||
+          file.endsWith('.ytdl') ||
+          file.endsWith('.crdownload') ||
+          file.endsWith('.tmp') ||
+          file.endsWith('.temp')
+        ) {
+          const filePath = path.join(dir, file);
+          try {
+            fs.unlinkSync(filePath);
+            console.log(`[Cleanup] Arquivo temporário removido com sucesso: ${file}`);
+          } catch {}
+        }
+      }
+    } catch (err) {
+      console.warn(`[Cleanup] Erro ao inspecionar diretório ${dir}:`, (err as Error).message);
+    }
+  }
+}
+
+/**
+ * Clean and sanitize filenames on the server
+ * Strips YouTube clutter, removes duplicate artist prefixes, and ensures clean extension.
+ */
+function cleanAudioFilenameServer(
+  rawArtist: string = '',
+  rawTitle: string = '',
+  format: string = 'mp3'
+): string {
+  let artist = (rawArtist || '').trim();
+  let title = (rawTitle || '').trim();
+
+  if (!title) title = 'Audio';
+
+  const noisePatterns = [
+    /\s*[\(\[]\s*(official\s*(music\s*)?video|clipe\s*oficial|vídeo\s*oficial|video\s*oficial|áudio\s*oficial|audio\s*oficial|visualizer|lyric\s*video|letra|4k|hd|hq|remaster(ed)?|ao\s*vivo|live|oficial|inédito)\s*[\)\]]/gi,
+    /\s*[\(\[]\s*(official\s*audio|faixa\s*oficial|completo|full\s*album|alta\s*qualidade)\s*[\)\]]/gi,
+    /\s*\|\s*(clipe\s*oficial|áudio\s*oficial|vídeo\s*oficial|official\s*video).*$/gi,
+    /\s*-\s*(clipe\s*oficial|áudio\s*oficial|vídeo\s*oficial|official\s*video).*$/gi,
+  ];
+
+  for (const pattern of noisePatterns) {
+    title = title.replace(pattern, '').trim();
+  }
+
+  let cleanArtist = artist
+    .replace(/^(fã\s*clube|fa\s*clube|canal\s*oficial\s*de|canal)\s+/i, '')
+    .trim();
+
+  const normalizeForCheck = (str: string) =>
+    str
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^a-z0-9]/g, '');
+
+  const normTitle = normalizeForCheck(title);
+  const normArtist = normalizeForCheck(cleanArtist);
+  const normRawArtist = normalizeForCheck(artist);
+
+  let finalName = '';
+  if (
+    (normArtist.length > 3 && normTitle.includes(normArtist)) ||
+    (normRawArtist.length > 3 && normTitle.includes(normRawArtist)) ||
+    !cleanArtist ||
+    cleanArtist.toLowerCase() === 'youtube'
+  ) {
+    finalName = title;
+  } else {
+    finalName = `${cleanArtist} - ${title}`;
+  }
+
+  finalName = finalName
+    .replace(/[\/\\?%*:|"<>~#&]/g, ' ')
+    .replace(/\s*-\s*-\s*/g, ' - ')
+    .replace(/\s+/g, ' ')
+    .replace(/^[\s\-]+|[\s\-]+$/g, '')
+    .trim();
+
+  if (!finalName) finalName = 'Audio';
+  finalName = finalName.replace(/\.(mp3|m4a|wav|flac|part|ytdl|webm|ogg)$/i, '');
+
+  const ext = format.toLowerCase().replace(/[^a-z0-9]/g, '') || 'mp3';
+  return `${finalName}.${ext}`;
+}
 
 // Helper to extract YouTube video ID
 function extractVideoId(url: string): string | null {
@@ -286,11 +388,21 @@ app.get('/api/progress', async (req, res) => {
   }
 });
 
+// Endpoint to manually or automatically trigger cleanup of temporary files
+app.post('/api/cleanup', (req, res) => {
+  try {
+    cleanupTemporaryArtifacts();
+    return res.json({ success: true, message: 'Arquivos temporários e incompletos limpos com sucesso.' });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 // Proxy download with optional FFmpeg trimming & bitrate adjustment
 app.get('/api/download-proxy', async (req, res) => {
   try {
     const rawUrl = req.query.url as string;
-    const filenameParam = (req.query.filename as string) || 'audio.mp3';
+    const filenameParam = (req.query.filename as string) || '';
     const bitrate = (req.query.bitrate as string) || '320k';
     const trim = req.query.trim === 'true';
     const trimStart = (req.query.trimStart as string) || '00:00';
@@ -298,24 +410,27 @@ app.get('/api/download-proxy', async (req, res) => {
     const customTitle = (req.query.title as string) || '';
     const customArtist = (req.query.artist as string) || '';
     const customAlbum = (req.query.album as string) || 'YouTube MP3';
+    const format = (req.query.format as string) || 'mp3';
 
     if (!rawUrl) {
-      return res.status(400).send('URL de download não fornecida');
+      return res.status(400).json({ success: false, error: 'URL de download não fornecida' });
     }
 
-    // Sanitize filename
-    const safeAsciiFilename = filenameParam
+    // Generate pristine, deduplicated filename
+    const cleanFinalName = cleanAudioFilenameServer(customArtist, customTitle || filenameParam, format);
+
+    const safeAsciiFilename = cleanFinalName
       .normalize('NFD')
       .replace(/[\u0300-\u036f]/g, '')
       .replace(/[\/\\?%*:|"<>]/g, '_')
       .replace(/[^\x20-\x7E]/g, '')
       .replace(/\s+/g, ' ')
-      .trim() || 'audio.mp3';
+      .trim() || `audio.${format}`;
 
-    const safeFilenameUtf8 = filenameParam
+    const safeFilenameUtf8 = cleanFinalName
       .replace(/[\/\\?%*:|"<>]/g, '_')
       .replace(/\s+/g, ' ')
-      .trim() || 'audio.mp3';
+      .trim() || `audio.${format}`;
 
     // Only pipe through ffmpeg if trimming is explicitly enabled
     if (trim) {
@@ -364,65 +479,132 @@ app.get('/api/download-proxy', async (req, res) => {
         if (!res.headersSent) {
           res.redirect(rawUrl);
         }
+        cleanupTemporaryArtifacts();
       });
 
       res.on('close', () => {
         try {
           ffmpegProcess.kill('SIGKILL');
         } catch {}
+        cleanupTemporaryArtifacts();
+      });
+
+      ffmpegProcess.on('close', () => {
+        cleanupTemporaryArtifacts();
       });
 
       return;
     }
 
-    // Direct streaming for fast downloads
+    // Direct streaming for fast downloads with strict anti-corruption validation
     try {
       const fileResponse = await fetch(rawUrl, {
         headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko)',
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          'Accept': 'audio/*, application/octet-stream, */*',
         },
       });
 
       if (!fileResponse.ok) {
-        return res.redirect(rawUrl);
+        return res.status(502).json({
+          success: false,
+          error: `Servidor de origem retornou status HTTP ${fileResponse.status}.`,
+        });
+      }
+
+      const contentType = (fileResponse.headers.get('content-type') || '').toLowerCase();
+      
+      // Critical check: if remote server returned an HTML error/protection page, DO NOT STREAM AS MP3!
+      // This prevents the small 11 KB corrupted file issue.
+      if (contentType.includes('text/html') || contentType.includes('application/json')) {
+        console.warn('[Proxy] Servidor remoto retornou HTML/JSON em vez de áudio.');
+        return res.status(502).json({
+          success: false,
+          error: 'O servidor remoto de conversão retornou uma página de verificação ou erro. O download corrompido foi bloqueado com sucesso.',
+        });
+      }
+
+      const contentLength = fileResponse.headers.get('content-length');
+      const numLength = contentLength ? parseInt(contentLength, 10) : 0;
+
+      // If payload is suspiciously tiny (< 25 KB), read first chunk to ensure it's not a disguised error page
+      if (numLength > 0 && numLength < 25000) {
+        const buffer = await fileResponse.arrayBuffer();
+        const sample = Buffer.from(buffer.slice(0, 500)).toString('utf-8');
+        if (sample.includes('<html') || sample.includes('<!DOCTYPE') || sample.includes('error')) {
+          console.warn('[Proxy] Arquivo incompleto ou página de erro detectada nos primeiros bytes.');
+          return res.status(502).json({
+            success: false,
+            error: 'Arquivo de áudio incompleto retornado pelo servidor remoto. O download foi cancelado para evitar arquivos defeituosos.',
+          });
+        }
+
+        res.setHeader(
+          'Content-Disposition',
+          `attachment; filename="${safeAsciiFilename}"; filename*=UTF-8''${encodeURIComponent(safeFilenameUtf8)}`
+        );
+        res.setHeader('Content-Type', 'audio/mpeg');
+        res.setHeader('Content-Length', buffer.byteLength);
+        res.send(Buffer.from(buffer));
+        cleanupTemporaryArtifacts();
+        return;
       }
 
       res.setHeader(
         'Content-Disposition',
         `attachment; filename="${safeAsciiFilename}"; filename*=UTF-8''${encodeURIComponent(safeFilenameUtf8)}`
       );
-      res.setHeader('Content-Type', fileResponse.headers.get('content-type') || 'audio/mpeg');
-      const contentLength = fileResponse.headers.get('content-length');
+      res.setHeader('Content-Type', 'audio/mpeg');
       if (contentLength) {
         res.setHeader('Content-Length', contentLength);
       }
 
       if (fileResponse.body) {
-        // Stream directly
         const reader = fileResponse.body.getReader();
-        while (true) {
+        let isAborted = false;
+
+        res.on('close', () => {
+          isAborted = true;
+          try {
+            reader.cancel();
+          } catch {}
+          cleanupTemporaryArtifacts();
+        });
+
+        while (!isAborted) {
           const { done, value } = await reader.read();
           if (done) break;
           res.write(value);
         }
         res.end();
+        cleanupTemporaryArtifacts();
       } else {
-        res.redirect(rawUrl);
+        res.status(502).json({ success: false, error: 'Fluxo de dados de áudio vazio.' });
       }
-    } catch (e) {
-      console.warn('Direct stream error, redirecting:', (e as Error).message);
-      res.redirect(rawUrl);
+    } catch (e: any) {
+      console.warn('Direct stream error:', e.message);
+      if (!res.headersSent) {
+        res.status(502).json({ success: false, error: 'Erro ao conectar ao servidor de áudio.' });
+      }
+      cleanupTemporaryArtifacts();
     }
   } catch (error) {
     console.error('Download proxy error:', error);
     if (!res.headersSent) {
-      res.status(500).send('Erro ao processar download do áudio');
+      res.status(500).json({ success: false, error: 'Erro ao processar download do áudio' });
     }
+    cleanupTemporaryArtifacts();
   }
 });
 
 // Vite integration
 async function start() {
+  // Clean any residual files on server boot
+  cleanupTemporaryArtifacts();
+
+  // Periodic cleanup every 10 minutes
+  setInterval(cleanupTemporaryArtifacts, 10 * 60 * 1000);
+
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
       server: { middlewareMode: true },
